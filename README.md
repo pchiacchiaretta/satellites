@@ -119,7 +119,6 @@ outputs_cams_annual/<Regione>/<Anno>/
   plot_province_capitals(ax, region_name)
   ```
 
----
 
 ### B) CSV delle medie regionali pesate
 
