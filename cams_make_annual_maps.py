@@ -749,10 +749,6 @@ def plot_montage_years_single_pollutant(
     out_png: Path,
     ncols: int = 4,
 ):
-    """
-    Pannelli per anno (affiancati) per una regione e un pollutant,
-    con vmin/vmax comuni e UNA colorbar unica sotto.
-    """
     if not year_to_da_reg:
         raise RuntimeError("Nessun anno disponibile per il montage.")
 
@@ -770,7 +766,7 @@ def plot_montage_years_single_pollutant(
     pad_y = (maxy - miny) * 0.03
     extent = [minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y]
 
-    # vmin/vmax globali su tutti gli anni (robusto con percentili)
+    # vmin/vmax globali (percentili robusti)
     all_vals = []
     for y in years:
         arr = np.asarray(year_to_da_reg[y].values)
@@ -791,7 +787,8 @@ def plot_montage_years_single_pollutant(
     n = len(years)
     nrows = int(np.ceil(n / ncols))
 
-    fig = plt.figure(figsize=(4.2 * ncols, 3.7 * nrows), dpi=200)
+    fig = plt.figure(figsize=(4.2 * ncols, 3.7 * nrows), dpi=DPI)
+
     axes = []
     mesh = None
 
@@ -803,7 +800,7 @@ def plot_montage_years_single_pollutant(
         ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.5)
         ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.3)
 
-        # ticks “leggeri” per non affollare (solo major)
+        # ticks “leggeri”
         xmaj = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 0.001, 1.0)
         ymaj = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 0.001, 0.5)
         ax.set_xticks(xmaj, crs=ccrs.PlateCarree())
@@ -829,6 +826,10 @@ def plot_montage_years_single_pollutant(
 
         ax.add_geometries([geom], crs=ccrs.PlateCarree(),
                           facecolor="none", edgecolor="black", linewidth=1.1, zorder=5)
+
+        # se vuoi anche qui i capoluoghi:
+        plot_province_capitals(ax, region_name)
+
         ax.set_title(str(y), fontsize=11)
 
     # subplot vuoti off
@@ -838,17 +839,24 @@ def plot_montage_years_single_pollutant(
 
     fig.suptitle(f"{region_name} – {pollutant} – medie annue {years[0]}–{years[-1]}", fontsize=16, y=0.98)
 
-    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal", fraction=0.04, pad=0.06, aspect=50)
+    # ---- spazio dedicato alla colorbar: CREA UN cax ----
+    # lascia spazio sotto ai subplot
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.12, wspace=0.15, hspace=0.22)
+
+    # asse dedicato alla colorbar in basso [left, bottom, width, height]
+    cax = fig.add_axes([0.18, 0.07, 0.64, 0.03])
+    cb = fig.colorbar(mesh, cax=cax, orientation="horizontal")
     cb.set_label(f"{long_name} [{units}]", fontsize=11)
     cb.ax.tick_params(labelsize=9, direction="in")
 
-    fig.text(0.01, 0.01, FOOTER_LEFT, ha="left", va="bottom", fontsize=9)
-    fig.text(0.99, 0.01, FOOTER_RIGHT, ha="right", va="bottom", fontsize=9)
+    # footer (sotto la colorbar)
+    fig.text(0.01, 0.02, FOOTER_LEFT, ha="left", va="bottom", fontsize=9)
+    fig.text(0.99, 0.02, FOOTER_RIGHT, ha="right", va="bottom", fontsize=9)
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(out_png, bbox_inches="tight")
+    fig.savefig(out_png, dpi=DPI)  # <-- NO bbox_inches="tight"
     plt.close(fig)
+
 
 
 
@@ -885,6 +893,7 @@ def main():
         set(df_annual["pollutant"].unique().tolist() if not df_annual.empty else [])
         | set(df_monthly["pollutant"].unique().tolist() if not df_monthly.empty else [])
     )
+
     print(f"[INFO] Anni: {years}")
     print(f"[INFO] Inquinanti: {pols[:30]}{' ...' if len(pols) > 30 else ''}")
 
@@ -903,13 +912,15 @@ def main():
     # ==========================
     # 1) MAPPE + CSV + FRAMES GIF
     # ==========================
+    ts_rows = []
+
     for (year, pollutant) in sorted(combos):
         da_year = None
 
         # 1) preferisci annual_mean se esiste
         if not df_annual.empty:
             hit = df_annual[(df_annual["year"] == year) & (df_annual["pollutant"] == pollutant)]
-            if len(hit) > 0:
+            if not hit.empty:
                 path = hit.iloc[0]["path"]
                 try:
                     da_year = compute_annual_from_single_nc(path)
@@ -920,7 +931,7 @@ def main():
         # 2) fallback: calcola dai mensili (validated > interim)
         if da_year is None:
             if df_monthly.empty:
-                print(f"[SKIP] {year} {pollutant}: nessun dato mensile e nessun annual.")
+                print(f"[SKIP] {year} {pollutant}: nessun mensile e nessun annual.")
                 continue
 
             grp = df_monthly[(df_monthly["year"] == year) & (df_monthly["pollutant"] == pollutant)]
@@ -938,6 +949,19 @@ def main():
         # normalize lon
         lon_name = da_year.attrs["__lon_name__"]
         da_year = normalize_longitudes(da_year, lon_name)
+
+        # --- TIME SERIES capoluoghi (valori su griglia intera, NON clip) ---
+        for region_name in REGIONS:
+            ts_rows.extend(
+                build_capitals_timeseries_rows(
+                    da_year=da_year,
+                    year=year,
+                    pollutant=pollutant,
+                    region_name=region_name,
+                    method="nearest",
+                )
+            )
+
 
         lat_name = da_year.attrs["__lat_name__"]
         lon_name = da_year.attrs["__lon_name__"]
@@ -999,48 +1023,48 @@ def main():
             year_to_da: Dict[int, xr.DataArray] = {}
 
             for y in all_years:
-                da_year = None
+                da_y = None
 
                 # 1) annual_mean se c'è
                 if not df_annual.empty:
                     hit = df_annual[(df_annual["year"] == y) & (df_annual["pollutant"] == pollutant)]
-                    if len(hit) > 0:
+                    if not hit.empty:
                         try:
-                            da_year = compute_annual_from_single_nc(hit.iloc[0]["path"])
+                            da_y = compute_annual_from_single_nc(hit.iloc[0]["path"])
                         except Exception as e:
                             print(f"[SKIP] montage annual {region_name} {pollutant} {y}: {e}")
-                            da_year = None
+                            da_y = None
 
                 # 2) fallback mensili (validated > interim)
-                if da_year is None and not df_monthly.empty:
+                if da_y is None and not df_monthly.empty:
                     grp = df_monthly[(df_monthly["year"] == y) & (df_monthly["pollutant"] == pollutant)]
                     if not grp.empty:
                         try:
                             paths = pick_monthly_paths_for_year_pollutant(grp)
-                            da_year = compute_yearly_mean_from_monthlies(paths)
+                            da_y = compute_yearly_mean_from_monthlies(paths)
                         except Exception as e:
                             print(f"[SKIP] montage monthly {region_name} {pollutant} {y}: {e}")
-                            da_year = None
+                            da_y = None
 
-                if da_year is None:
+                if da_y is None:
                     continue
 
                 # normalize lon
-                lon_name = da_year.attrs["__lon_name__"]
-                da_year = normalize_longitudes(da_year, lon_name)
-                lat_name = da_year.attrs["__lat_name__"]
-                lon_name = da_year.attrs["__lon_name__"]
+                lon_name = da_y.attrs["__lon_name__"]
+                da_y = normalize_longitudes(da_y, lon_name)
+
+                lat_name = da_y.attrs["__lat_name__"]
+                lon_name = da_y.attrs["__lon_name__"]
 
                 # clip regione
                 try:
-                    da_reg = clip_to_region(da_year, lat_name, lon_name, geom)
+                    da_reg = clip_to_region(da_y, lat_name, lon_name, geom)
                     arr = np.asarray(da_reg.values)
                     if arr.size == 0 or np.sum(np.isfinite(arr)) == 0:
                         continue
                     year_to_da[y] = da_reg
                 except Exception as e:
                     print(f"[SKIP] montage clip {region_name} {pollutant} {y}: {e}")
-                    continue
 
             if len(year_to_da) < 2:
                 print(f"[SKIP] MONTAGE {region_name} {pollutant}: troppo pochi anni ({len(year_to_da)})")
@@ -1061,6 +1085,19 @@ def main():
                 print(f"[DONE] MONTAGE: {out_png}")
             except Exception as e:
                 print(f"[SKIP] MONTAGE {region_name} {pollutant}: {e}")
+
+            # ==========================
+            # 3) TIME SERIES capoluoghi
+            # ==========================
+            df_ts = pd.DataFrame(ts_rows)
+
+            ts_dir = OUT_DIR / "timeseries_capoluoghi"
+            plot_timeseries_by_pollutant(df_ts, ts_dir)
+
+            # opzionale: salva anche i valori in CSV
+            df_ts.to_csv(ts_dir / "capitals_timeseries_values.csv", index=False)
+
+            print(f"[DONE] Timeseries salvate in: {ts_dir}")
 
 
 
