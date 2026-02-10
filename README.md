@@ -1,14 +1,23 @@
-# CAMS – Mappe annuali, medie regionali, GIF, montage e time-series per capoluoghi (Abruzzo + Puglia)
+# **CAMS – Mappe annuali, medie regionali, GIF, montage e time-series per capoluoghi**
 
-Questo progetto genera **mappe annuali** di inquinanti atmosferici (da CAMS), calcola **medie regionali**, crea **GIF** nel tempo, costruisce un **montage multi-anno** (anni affiancati con **un’unica colorbar**) e può produrre **grafici di andamento temporale (time-series) per capoluogo di provincia**.
+**Abruzzo + Puglia**
+
+Questo progetto genera:
+
+* **mappe annuali** di inquinanti atmosferici (da CAMS)
+* **medie regionali pesate**
+* **GIF** multi-anno
+* **montage multi-anno** (anni affiancati con **un’unica colorbar**)
+* **grafici di andamento temporale (time-series) per capoluogo di provincia**
 
 ---
 
 ## 1) Cos’è CAMS e cosa stai usando qui
 
-**CAMS (Copernicus Atmosphere Monitoring Service)** è il servizio Copernicus dedicato al monitoraggio atmosferico: produce e distribuisce **analisi**, **previsioni** e **reanalisi** (ricostruzioni “storiche” consistenti) per vari componenti atmosferici e qualità dell’aria. :contentReference[oaicite:0]{index=0}
+**CAMS (Copernicus Atmosphere Monitoring Service)** è il servizio Copernicus dedicato al monitoraggio atmosferico: produce e distribuisce **analisi**, **previsioni** e **reanalisi** (ricostruzioni storiche consistenti) per vari componenti atmosferici e per la qualità dell’aria.
 
-Nel tuo caso usi i file NetCDF della **reanalisi/produzione regionale europea** di qualità dell’aria (dataset mensili “validated” o “interim” e/o file già annuali). Questi prodotti tipicamente combinano modellistica e osservazioni, e sono pensati per analisi climatologiche/temporali e confronti tra aree. :contentReference[oaicite:1]{index=1}
+Nel tuo caso utilizzi i file NetCDF della **reanalisi/produzione regionale europea** di qualità dell’aria (dataset mensili *validated* o *interim* e/o file già annuali).
+Questi prodotti combinano modellistica e osservazioni e sono pensati per analisi climatologiche, trend temporali e confronti spaziali.
 
 ---
 
@@ -16,270 +25,306 @@ Nel tuo caso usi i file NetCDF della **reanalisi/produzione regionale europea** 
 
 Lo script:
 
-1. **Scansiona i file NetCDF** in `DATA_DIR`  
-   - Se trova file annuali: `annual_mean_<pollutant>_<year>.nc` li usa direttamente (più veloce).
-   - Altrimenti calcola la media annua dai mensili:
-     `cams-europe-air-quality-reanalyses_<pollutant>_<year>_<month>_(validated|interim)_reanalysis.nc`
+1. **Scansiona i file NetCDF** in `DATA_DIR`
+
+   * Se trova file annuali:
+
+     ```
+     annual_mean_<pollutant>_<year>.nc
+     ```
+
+     li usa direttamente (più veloce).
+   * Altrimenti calcola la media annua dai mensili:
+
+     ```
+     cams-europe-air-quality-reanalyses_<pollutant>_<year>_<month>_(validated|interim)_reanalysis.nc
+     ```
+
      con priorità `validated > interim`.
 
-2. Per ogni combinazione (anno, inquinante) e per ogni regione in `REGIONS`:
-   - normalizza le longitudini in `[-180,180)`,
-   - fa clip sulla regione,
-   - salva **mappa annuale** (PNG),
-   - calcola e salva **media regionale pesata** (CSV),
-   - memorizza i frame per costruire la GIF.
+2. Per ogni combinazione **(anno, inquinante)** e per ogni regione in `REGIONS`:
 
-3. Per ogni (regione, inquinante) crea:
-   - **GIF** multi-anno.
-   - **Montage** multi-anno (anni affiancati) con **colorbar unica**.
+   * normalizza le longitudini in `[-180, 180)`
+   * effettua il clip sulla regione
+   * salva la **mappa annuale** (PNG)
+   * calcola e salva la **media regionale pesata** (CSV)
+   * memorizza i frame per la GIF
 
-4. (Opzionale, ma consigliato) Estrae valori ai capoluoghi e salva:
-   - **time-series per capoluogo** (un PNG per ogni coppia regione-inquinante),
-   - e/o un CSV dedicato ai capoluoghi.
+3. Per ogni **(regione, inquinante)** crea:
+
+   * **GIF** multi-anno
+   * **montage multi-anno** (anni affiancati) con **colorbar unica**
+
+4. *(Opzionale ma consigliato)* Estrae i valori nei capoluoghi e salva:
+
+   * **time-series per capoluogo** (PNG)
+   * **CSV dedicato ai capoluoghi**
 
 ---
 
 ## 3) Requisiti
 
-- Python 3.x
-- pacchetti: `numpy`, `pandas`, `xarray`, `matplotlib`, `geopandas`, `shapely`, `cartopy`, `imageio`, `rioxarray` (opzionale ma consigliato)
-- file di confine regioni: `boundaries/regioni_italia.json`
-- (opzionale) file capoluoghi: `boundaries/capoluoghi_provincia.csv` **oppure** dizionario `PROVINCE_CAPITALS` già nel codice
+* Python 3.x
+* Pacchetti:
+
+  * `numpy`, `pandas`, `xarray`
+  * `matplotlib`
+  * `geopandas`, `shapely`
+  * `cartopy`
+  * `imageio`
+  * `rioxarray` *(opzionale ma consigliato)*
+* Confini regionali:
+
+  ```
+  boundaries/regioni_italia.json
+  ```
+* Capoluoghi (una delle due opzioni):
+
+  * `boundaries/capoluoghi_provincia.csv`
+  * dizionario `PROVINCE_CAPITALS` nel codice
 
 ---
 
 ## 4) Config principali
 
-Nel blocco CONFIG:
+Nel blocco **CONFIG**:
 
-- `DATA_DIR`: cartella con i NetCDF CAMS
-- `BOUNDARY_FILE`: GeoJSON regioni
-- `OUT_DIR`: cartella output (`outputs_cams_annual`)
-- `REGIONS`: elenco regioni da processare (Abruzzo, Puglia)
-- `PROVINCE_CAPITALS`: elenco capoluoghi con lat/lon + sigla (AQ, TE, …)
+* `DATA_DIR` – cartella con i NetCDF CAMS
+* `BOUNDARY_FILE` – GeoJSON regioni
+* `OUT_DIR` – cartella output (`outputs_cams_annual`)
+* `REGIONS` – regioni da processare (`Abruzzo`, `Puglia`)
+* `PROVINCE_CAPITALS` – capoluoghi con lat/lon e sigla (AQ, TE, …)
 
 ---
 
 ## 5) Output: cosa viene creato e dove
 
-### A) Mappe annuali per regione/anno/inquinante (PNG)
+### A) Mappe annuali (PNG)
 
-Percorso:
+**Percorso**
+
+```text
+outputs_cams_annual/<Regione>/<Anno>/
+<Regione>_<Anno>_<pollutant>_annual_mean.png
 ```
 
-outputs_cams_annual/<Regione>/<Anno>/<Regione>*<Anno>*<pollutant>_annual_mean.png
+**Contenuto**
 
-````
+* raster dell’inquinante
+* contorno della regione
+* griglia lat/lon con ticks
+* **capoluoghi di provincia** (punto + sigla), se abilitati con:
 
-Contenuto:
-- raster dell’inquinante
-- contorno regione
-- griglia lat/lon e ticks
-- **capoluoghi di provincia** (punto + sigla) se abilitati in `plot_map()` con:
   ```python
   plot_province_capitals(ax, region_name)
-````
+  ```
 
 ---
 
 ### B) CSV delle medie regionali pesate
 
-Percorso:
+**Percorso**
 
-```
+```text
 outputs_cams_annual/regional_annual_means.csv
 ```
 
-Colonne tipiche:
+**Colonne**
 
-* `region`, `year`, `pollutant`
+* `region`
+* `year`
+* `pollutant`
 * `value` (media regionale)
-* `units`, `var_name`, `n_months`
+* `units`
+* `var_name`
+* `n_months`
 
 La media è pesata con `cos(lat)` per approssimare l’area delle celle.
 
 ---
 
-### C) GIF (una per regione+inquinante)
+### C) GIF multi-anno
 
-Percorso:
+**Percorso**
 
-```
-outputs_cams_annual/gifs/<Regione>_<pollutant>_annual_mean.gif
+```text
+outputs_cams_annual/gifs/
+<Regione>_<pollutant>_annual_mean.gif
 ```
 
 Ogni frame è la mappa annuale già salvata.
 
 ---
 
-### D) Montage multi-anno (anni affiancati) con colorbar unica
+### D) Montage multi-anno con colorbar unica
 
-Percorso:
+**Percorso**
 
-```
-outputs_cams_annual/montages/<Regione>/<Regione>_<pollutant>_<y0>-<y1>_montage.png
-```
-
-Note importanti:
-
-* vmin/vmax calcolati su tutti gli anni (percentili 2–98) per avere scala coerente.
-* Per evitare che la colorbar “invada” i subplot, la funzione migliore è quella dove:
-
-  * fai `fig.subplots_adjust(..., bottom=...)`
-  * crei un asse dedicato `cax = fig.add_axes([...])`
-  * salvi **senza** `bbox_inches="tight"`.
-
----
-
-### E) Time-series capoluoghi (PNG) – **ATTENZIONE: va chiamata in `main()`**
-
-Le funzioni `sample_at_point`, `build_capitals_timeseries_rows`, `plot_timeseries_by_pollutant`
-nel tuo codice **ci sono**, ma **se non le chiami in `main()` non verrà salvato nulla**.
-
-Consiglio output:
-
-Percorso:
-
-```
-outputs_cams_annual/timeseries_capoluoghi/<Regione>_<pollutant>_capitals_timeseries.png
+```text
+outputs_cams_annual/montages/<Regione>/
+<Regione>_<pollutant>_<y0>-<y1>_montage.png
 ```
 
-**Dove lo salva?**
-Se imposti, ad esempio:
+**Note importanti**
 
-```python
-TS_DIR = OUT_DIR / "timeseries_capoluoghi"
-plot_timeseries_by_pollutant(df_ts, TS_DIR)
+* `vmin` / `vmax` calcolati su **tutti gli anni** (percentili 2–98)
+* colorbar su asse dedicato:
+
+  * `fig.subplots_adjust(bottom=...)`
+  * `cax = fig.add_axes([...])`
+* salvataggio **senza** `bbox_inches="tight"`
+
+---
+
+### E) Time-series dei capoluoghi (PNG)
+
+⚠️ **ATTENZIONE**
+Le funzioni:
+
+* `sample_at_point`
+* `build_capitals_timeseries_rows`
+* `plot_timeseries_by_pollutant`
+
+**sono presenti**, ma **se non vengono chiamate in `main()` non viene salvato nulla**.
+
+**Output consigliato**
+
+```text
+outputs_cams_annual/timeseries_capoluoghi/
+<Regione>_<pollutant>_capitals_timeseries.png
 ```
 
-allora i grafici finiscono lì.
+**Logica di attivazione**
 
-✅ **Come abilitarlo (logica)**
-Durante il loop principale, dopo aver creato `da_year` (annuale) e prima/dopo il loop regioni, costruisci righe time-series per capoluoghi (usando `da_year` già normalizzato) e accumuli in una lista `ts_rows`. Alla fine:
+* durante il loop annuale, usa `da_year`
+* accumula righe in `ts_rows`
+* alla fine:
 
-* `df_ts = pd.DataFrame(ts_rows)`
-* salvi CSV
-* salvi i plot con `plot_timeseries_by_pollutant(df_ts, TS_DIR)`
+  * crea `df_ts`
+  * salva CSV
+  * salva i plot con:
 
----
-
-## 6) Inquinanti (“composti”) trattati: cosa sono, rischi salute, soglie
-
-Qui sotto trovi una sintesi **sanitaria** e i riferimenti a **valori guida OMS 2021** e **limiti UE (Direttiva 2008/50/CE)**.
-
-> Nota: OMS (WHO) = **linee guida** sanitarie (più stringenti); UE = **limiti normativi** (obblighi legali). Le metriche possono differire (annuale, giornaliero, 8h, ecc.).
-
-### PM2.5 (particulate_matter_2.5um)
-
-**Cos’è:** particolato fine con diametro ≤ 2.5 µm.
-**Perché è dannoso:** penetra in profondità nei polmoni e può entrare nel circolo sanguigno; associato a mortalità cardiovascolare/respiratoria e peggioramento asma/BPCO.
-
-**Valori guida OMS 2021 (PM2.5):**
-
-* Media annua: **5 µg/m³**
-* Media 24h: **15 µg/m³**
-
-**Limiti UE (Direttiva 2008/50/CE):**
-
-* Media annua: **25 µg/m³** (valore limite) ([confluence.ecmwf.int][1])
+    ```python
+    plot_timeseries_by_pollutant(df_ts, TS_DIR)
+    ```
 
 ---
 
-### PM10 (particulate_matter_10um)
+## 6) Inquinanti trattati: descrizione, rischi e soglie
 
-**Cos’è:** particolato inalabile con diametro ≤ 10 µm.
-**Perché è dannoso:** irritazione vie respiratorie, peggioramento patologie respiratorie; parte può depositarsi in bronchi e polmoni.
+> **OMS (WHO)** = linee guida sanitarie
+> **UE** = limiti normativi (Direttiva 2008/50/CE)
 
-**Valori guida OMS 2021 (PM10):**
+### PM2.5
 
-* Media annua: **15 µg/m³**
-* Media 24h: **45 µg/m³**
+* **Cos’è:** particolato fine ≤ 2.5 µm
+* **Rischi:** cardiovascolari e respiratori, asma, BPCO
 
-**Limiti UE (Direttiva 2008/50/CE):**
+**OMS 2021**
 
-* Media annua: **40 µg/m³**
-* Giornaliero: **50 µg/m³** da non superare > **35** volte/anno ([confluence.ecmwf.int][1])
+* annua: **5 µg/m³**
+* 24h: **15 µg/m³**
 
----
+**UE**
 
-### NO2 (nitrogen_dioxide)
-
-**Cos’è:** biossido di azoto, prodotto soprattutto da combustione (traffico, riscaldamento).
-**Perché è dannoso:** irritazione delle vie aeree, aumento suscettibilità a infezioni, peggioramento asma; è anche indicatore di inquinamento da traffico.
-
-**Valori guida OMS 2021 (NO2):**
-
-* Media annua: **10 µg/m³**
-* Media 24h: **25 µg/m³**
-
-**Limiti UE (Direttiva 2008/50/CE):**
-
-* Media annua: **40 µg/m³**
-* Orario: **200 µg/m³** da non superare > **18** volte/anno ([confluence.ecmwf.int][1])
+* annua: **25 µg/m³**
 
 ---
 
-### O3 (ozone)
+### PM10
 
-**Cos’è:** ozono troposferico (inquinante “secondario”), si forma con reazioni fotochimiche da precursori (NOx, VOC) con sole.
-**Perché è dannoso:** irritazione, riduzione funzione polmonare, peggioramento asma; effetti più marcati nei picchi estivi.
+* **Cos’è:** particolato inalabile ≤ 10 µm
+* **Rischi:** irritazione vie respiratorie
 
-**Valori guida OMS 2021 (O3):**
+**OMS 2021**
 
-* Picco stagione: **60 µg/m³** (metrica OMS “peak season”)
+* annua: **15 µg/m³**
+* 24h: **45 µg/m³**
 
-**Soglie UE (Direttiva 2008/50/CE):**
+**UE**
 
-* Valore obiettivo per la protezione della salute: **120 µg/m³** (massima media mobile 8 ore), da non superare > **25** giorni/anno (media su 3 anni) ([confluence.ecmwf.int][1])
-
-> Importante: per O3 le “medie annue” non sono la metrica più rappresentativa dei rischi: contano molto i picchi (8h, stagionali).
+* annua: **40 µg/m³**
+* giornaliera: **50 µg/m³** (≤ 35 superamenti/anno)
 
 ---
 
-## 7) Note pratiche e “gotcha” comuni
+### NO₂
 
-### Perché a volte la mappa “cambiava dimensione”?
+* **Cos’è:** biossido di azoto (traffico, combustione)
+* **Rischi:** asma, infezioni respiratorie
 
-Di solito succede quando si salva con `bbox_inches="tight"`: Matplotlib ritaglia diversamente in base a testi/ticks, e la GIF “balla”.
-Nel tuo `plot_map()` fai bene: **non usare** `bbox_inches="tight"` per le mappe singole.
+**OMS 2021**
 
-### Perché nel montage la colorbar finiva sopra i subplot?
+* annua: **10 µg/m³**
+* 24h: **25 µg/m³**
 
-Perché `tight_layout()` + `bbox_inches="tight"` possono ricalcolare i bounding box e “tirare su” la colorbar.
-Soluzione corretta (che hai già iniziato a usare): **asse dedicato `cax`** + `subplots_adjust(bottom=...)` + salvataggio **senza** `bbox_inches="tight"`.
+**UE**
 
-### Capoluoghi non visibili sulle mappe
+* annua: **40 µg/m³**
+* oraria: **200 µg/m³** (≤ 18 superamenti/anno)
 
-Cause tipiche:
+---
 
-* chiamata a `plot_province_capitals(ax, region_name)` mancante (ora l’hai messa)
-* zorder troppo basso (tu usi 10/11, va bene)
-* label troppo piccola o coperta: aumenta `fontsize` o `bbox alpha`
-* coordinate leggermente fuori extent per padding troppo stretto: aumenta `pad_x/pad_y` (es. 0.05 invece di 0.03)
+### O₃
+
+* **Cos’è:** ozono troposferico (secondario)
+* **Rischi:** riduzione funzione polmonare
+
+**OMS 2021**
+
+* peak season: **60 µg/m³**
+
+**UE**
+
+* 8h: **120 µg/m³**
+* ≤ 25 giorni/anno (media su 3 anni)
+
+> Nota: per O₃ le **medie annue non sono la metrica più rappresentativa**.
+
+---
+
+## 7) Note pratiche (gotcha comuni)
+
+### Mappe che “cambiano dimensione”
+
+* causa: `bbox_inches="tight"`
+* soluzione: **non usarlo** per le mappe singole
+
+### Colorbar che invade il montage
+
+* evitare `tight_layout()`
+* usare asse dedicato `cax`
+* salvare **senza** `bbox_inches="tight"`
+
+### Capoluoghi non visibili
+
+* funzione non chiamata
+* `zorder` troppo basso
+* font troppo piccolo
+* padding troppo stretto (`pad_x`, `pad_y`)
 
 ---
 
 ## 8) Esecuzione
 
-Esegui:
-
 ```bash
 python cams_make_annual_maps.py
 ```
 
-Controlla poi:
+Verifica:
 
-* `outputs_cams_annual/<Regione>/<Anno>/...png` (mappe)
-* `outputs_cams_annual/regional_annual_means.csv`
-* `outputs_cams_annual/gifs/...gif`
-* `outputs_cams_annual/montages/...png`
-* (se abilitato) `outputs_cams_annual/timeseries_capoluoghi/...png`
+* mappe PNG
+* CSV medie regionali
+* GIF
+* montage
+* *(opzionale)* time-series capoluoghi
 
 ---
 
-## 9) Disclaimer (molto importante)
+## 9) Disclaimer (importante)
 
-* Le reanalisi/modelli CAMS sono ottimi per **pattern spaziali e trend**, ma non sostituiscono misure ufficiali puntuali di stazioni locali.
-* Le soglie OMS/UE vanno interpretate correttamente rispetto alla **metrica temporale** (annuale, 24h, 8h, oraria).
-* I grafici “per capoluogo” estraggono il valore della **griglia CAMS nel punto** (nearest/interp), non una misura reale urbana “street level”.
+* I prodotti CAMS sono ideali per **pattern spaziali e trend**, non sostituiscono le stazioni ufficiali.
+* Le soglie OMS/UE vanno interpretate secondo la **metrica temporale corretta**.
+* Le time-series per capoluogo rappresentano il **valore della griglia CAMS**, non una misura urbana reale “street-level”.
 
+---
