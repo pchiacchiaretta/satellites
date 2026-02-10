@@ -1,0 +1,93 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# virtual environment
+camsenv/
+venv/
+.env/
+.venv/
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# =========================
+# Jupyter / IPython
+# =========================
+.ipynb_checkpoints/
+.profile_default/
+ipython_config.py
+
+# =========================
+# OS
+# =========================
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Dati CAMS / NetCDF
+# =========================
+*.nc
+*.nc4
+*.grib
+*.grib2
+
+# se vuoi ignorare solo la cartella dati:
+data_nc/
+
+# =========================
+# Output mappe e risultati
+# =========================
+outputs/
+*.png
+*.jpg
+*.tif
+*.tiff
+*.pdf
+
+# =========================
+# Log / temporanei
+# =========================
+*.log
+*.tmp
+
+# =========================
+# Dask
+# =========================
+dask-worker-space/
+
+# =========================
+# Geo
+# =========================
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+
+# se vuoi versionare i confini ma non quelli temporanei:
+# boundaries/tmp/
+
+# =========================
+# Env vars
+# =========================
+.env
+.env.*
+
+outputs_cams_annual
