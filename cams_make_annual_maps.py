@@ -10,14 +10,11 @@ CAMS – Mappe annuali + CSV medie regionali + GIF per (regione, inquinante) nel
 
 - Priorità mensili: validated > interim
 
-Output:
-  outputs_cams_annual/<Regione>/<Anno>/<Regione>_<Anno>_<pollutant>_annual_mean.png
-  outputs_cams_annual/regional_annual_means.csv
-  outputs_cams_annual/gifs/<Regione>_<pollutant>_annual_mean.gif
+FIX (importante):
+- Regrid su griglia comune (per ogni pollutant) per evitare cambi di griglia dopo 2019 e rendere confronti/GIF coerenti.
 """
 
 import os
-
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"  # filesystem condivisi
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -62,21 +59,25 @@ DPI = 200
 FOOTER_LEFT = "Dati: Copernicus Atmosphere Monitoring Service (CAMS) – Copernicus/ECMWF"
 FOOTER_RIGHT = "Elaborazione: UdAtmo - Dr. Piero Chiacchiaretta"
 
-# frame time per GIF (secondi)
-GIF_FPS = 1.2  # ~0.83s a frame
-GIF_LOOP = 0   # 0 = infinito
-
+GIF_FPS = 1.2
+GIF_LOOP = 0
 
 CAPOLUOGHI_FILE = Path("boundaries/capoluoghi_provincia.csv")
 
-df_caps = pd.read_csv(CAPOLUOGHI_FILE)
+# Regrid config:
+# - "first": usa la prima griglia incontrata per quel pollutant (più riproducibile)
+# - "finest": usa la griglia con passo più fine tra quelle incontrate (più dettagli, più costoso)
+REGRID_MODE = "first"   # ["first", "finest"]
+REGRID_METHOD = "linear"  # ["linear", "nearest"]
+DEBUG_GRID = False        # True per print su shape/step
 
+
+df_caps = pd.read_csv(CAPOLUOGHI_FILE)
 gdf_caps = gpd.GeoDataFrame(
     df_caps,
     geometry=gpd.points_from_xy(df_caps.lon, df_caps.lat),
     crs="EPSG:4326"
 )
-
 
 PROVINCE_CAPITALS = {
     "Abruzzo": [
@@ -95,17 +96,15 @@ PROVINCE_CAPITALS = {
     ],
 }
 
+
 # =========================
 # REGEX FILE
 # =========================
-# annual_mean_ozone_2022.nc
 ANNUAL_RE = re.compile(
     r"annual_mean_(?P<pollutant>.+?)_(?P<year>\d{4})\.nc$",
     re.IGNORECASE
 )
 
-# cams-europe-air-quality-reanalyses_nitrogen_dioxide_2023_01_interim_reanalysis.nc
-# cams-europe-air-quality-reanalyses_particulate_matter_2.5um_2018_07_validated_reanalysis.nc
 MONTHLY_RE = re.compile(
     r"cams-europe-air-quality-reanalyses_(?P<pollutant>.+?)_(?P<year>\d{4})_(?P<month>\d{2})_(?P<kind>interim_reanalysis|validated_reanalysis)\.nc$",
     re.IGNORECASE
@@ -133,7 +132,6 @@ def find_lat_lon(ds: xr.Dataset) -> Tuple[str, str]:
 
 
 def guess_main_data_var(ds: xr.Dataset) -> str:
-    # variabile più plausibile: esclude coords/crs
     blacklist = set(ds.coords.keys()) | {"crs"}
     candidates = []
     for v in ds.data_vars:
@@ -148,14 +146,82 @@ def guess_main_data_var(ds: xr.Dataset) -> str:
 
 
 def normalize_longitudes(da: xr.DataArray, lon_name: str) -> xr.DataArray:
-    """
-    Porta le longitudes in range [-180, 180) e ordina.
-    Utile se dataset è 0..360 o ha wrap.
-    """
     lon = da[lon_name]
     lon_norm = ((lon + 180) % 360) - 180
     da2 = da.assign_coords({lon_name: lon_norm})
     return da2.sortby(lon_name)
+
+
+def _grid_step_1d(coord: np.ndarray) -> float:
+    coord = np.asarray(coord)
+    if coord.size < 2:
+        return np.nan
+    d = np.diff(coord.astype(float))
+    return float(np.nanmedian(np.abs(d)))
+
+
+# =========================
+# REGRID (NUOVO)
+# =========================
+def regrid_to_reference(
+    da: xr.DataArray,
+    ref_lats: xr.DataArray,
+    ref_lons: xr.DataArray,
+    method: str = "linear",
+) -> xr.DataArray:
+    """
+    Regrid su griglia (ref_lats, ref_lons) usando xarray.interp.
+    """
+    lat_name = da.attrs["__lat_name__"]
+    lon_name = da.attrs["__lon_name__"]
+
+    # lon coerenti e ordinate
+    da = normalize_longitudes(da, lon_name)
+
+    da_rg = da.interp(
+        {lat_name: ref_lats, lon_name: ref_lons},
+        method=method,
+        kwargs={"fill_value": np.nan},
+    )
+    da_rg.attrs.update(da.attrs)
+    return da_rg
+
+
+def maybe_set_reference_grid(
+    pollutant: str,
+    da: xr.DataArray,
+    ref_grid_by_pollutant: Dict[str, Tuple[xr.DataArray, xr.DataArray]],
+    mode: str = "first",
+) -> None:
+    """
+    Imposta (se necessario) la griglia di riferimento per quel pollutant.
+    mode:
+      - "first": prima griglia incontrata
+      - "finest": prende la più fine (min step) tra quelle incontrate
+    """
+    lat_name = da.attrs["__lat_name__"]
+    lon_name = da.attrs["__lon_name__"]
+
+    lats = da[lat_name]
+    lons = da[lon_name]
+
+    if pollutant not in ref_grid_by_pollutant:
+        ref_grid_by_pollutant[pollutant] = (lats.copy(), lons.copy())
+        return
+
+    if mode != "finest":
+        return
+
+    ref_lats, ref_lons = ref_grid_by_pollutant[pollutant]
+    step_lat_new = _grid_step_1d(lats.values)
+    step_lon_new = _grid_step_1d(lons.values)
+    step_lat_ref = _grid_step_1d(ref_lats.values)
+    step_lon_ref = _grid_step_1d(ref_lons.values)
+
+    # "finest" = step più piccolo (più risoluzione)
+    if (np.isfinite(step_lat_new) and np.isfinite(step_lat_ref) and step_lat_new < step_lat_ref) or \
+       (np.isfinite(step_lon_new) and np.isfinite(step_lon_ref) and step_lon_new < step_lon_ref):
+        ref_grid_by_pollutant[pollutant] = (lats.copy(), lons.copy())
 
 
 # =========================
@@ -177,11 +243,6 @@ def load_region_geoms() -> Dict[str, object]:
 # SCANSIONE FILE
 # =========================
 def scan_cams_files(data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Ritorna:
-      - df_annual: [year, pollutant, path]
-      - df_monthly: [year, month, pollutant, kind, path]
-    """
     annual_rows = []
     monthly_rows = []
 
@@ -219,25 +280,18 @@ def scan_cams_files(data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # CALCOLO MEDIA ANNUA
 # =========================
 def compute_annual_from_single_nc(path: str) -> xr.DataArray:
-    """
-    Per file annual_mean_* oppure qualsiasi nc già annuale:
-    - legge il dataset, prende variabile principale
-    - se c'è dimensione tempo, fa mean su time
-    """
     with xr.open_dataset(path) as ds:
         lat_name, lon_name = find_lat_lon(ds)
         var_name = guess_main_data_var(ds)
 
         da = ds[var_name]
 
-        # media su dimensione time se presente
         time_dim = next((d for d in da.dims if d.lower() in ("time", "valid_time", "datetime")), None)
         if time_dim is not None:
             da = da.mean(time_dim, skipna=True)
 
         da = da.astype("float64")
 
-        # attrs robusti
         attrs = dict(da.attrs)
         if not attrs.get("units"):
             attrs["units"] = ds[var_name].attrs.get("units", "") or ds.attrs.get("units", "")
@@ -248,16 +302,11 @@ def compute_annual_from_single_nc(path: str) -> xr.DataArray:
         da.attrs["__lat_name__"] = lat_name
         da.attrs["__lon_name__"] = lon_name
         da.attrs["__var_name__"] = var_name
-        da.attrs["__n_months__"] = 12  # nominale
+        da.attrs["__n_months__"] = 12
         return da
 
 
 def compute_yearly_mean_from_monthlies(paths: List[str]) -> xr.DataArray:
-    """
-    Calcola la media annua aprendo i file mensili uno alla volta (robusto su HPC).
-    - Per ogni mese: mean sul tempo interno se presente
-    - Poi mean sui mesi disponibili (anche se mancano)
-    """
     paths = sorted(paths)
 
     da_sum = None
@@ -274,7 +323,6 @@ def compute_yearly_mean_from_monthlies(paths: List[str]) -> xr.DataArray:
 
             da = ds[var_name]
 
-            # media sul tempo interno se esiste
             time_dim = next((d for d in da.dims if d.lower() in ("time", "valid_time", "datetime")), None)
             if time_dim is not None:
                 da_m = da.mean(time_dim, skipna=True)
@@ -309,9 +357,6 @@ def compute_yearly_mean_from_monthlies(paths: List[str]) -> xr.DataArray:
 
 
 def pick_monthly_paths_for_year_pollutant(grp: pd.DataFrame) -> List[str]:
-    """
-    Priorità: validated > interim
-    """
     grp_v = grp[grp["kind"].str.contains("validated")]
     grp_i = grp[grp["kind"].str.contains("interim")]
     use = grp_v if len(grp_v) > 0 else grp_i
@@ -324,7 +369,6 @@ def pick_monthly_paths_for_year_pollutant(grp: pd.DataFrame) -> List[str]:
 def clip_to_region(da: xr.DataArray, lat_name: str, lon_name: str, geom):
     minx, miny, maxx, maxy = geom.bounds
 
-    # bbox: tieni la stessa griglia (drop=False)
     da_sub = da.where(
         (da[lat_name] >= miny) & (da[lat_name] <= maxy) &
         (da[lon_name] >= minx) & (da[lon_name] <= maxx),
@@ -334,20 +378,16 @@ def clip_to_region(da: xr.DataArray, lat_name: str, lon_name: str, geom):
     try:
         import rioxarray  # noqa: F401
         da_sub = da_sub.rio.write_crs("EPSG:4326", inplace=False)
-        # drop=False => non cambia shape, mette NaN fuori regione
         da_clip = da_sub.rio.clip([mapping(geom)], crs="EPSG:4326", drop=False)
         return da_clip
     except Exception:
         return da_sub
 
 
-
 def regional_weighted_mean(da_reg: xr.DataArray) -> float:
     lat_name = da_reg.attrs["__lat_name__"]
-
     lat_radians = np.deg2rad(da_reg[lat_name])
     weights = np.cos(lat_radians)
-
     wmean = da_reg.weighted(weights).mean(skipna=True)
     return float(wmean.values)
 
@@ -355,6 +395,37 @@ def regional_weighted_mean(da_reg: xr.DataArray) -> float:
 # =========================
 # PLOT
 # =========================
+def plot_province_capitals(ax, region_name: str):
+    if region_name not in PROVINCE_CAPITALS:
+        return
+
+    for cap in PROVINCE_CAPITALS[region_name]:
+        lon = cap["lon"]
+        lat = cap["lat"]
+        sigla = cap["sigla"]
+
+        ax.plot(
+            lon, lat,
+            marker="o",
+            markersize=4,
+            color="black",
+            transform=ccrs.PlateCarree(),
+            zorder=10,
+        )
+
+        ax.text(
+            lon + 0.03, lat + 0.03,
+            sigla,
+            fontsize=9,
+            fontweight="bold",
+            ha="left",
+            va="bottom",
+            transform=ccrs.PlateCarree(),
+            zorder=11,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.6, pad=0.8),
+        )
+
+
 def plot_map(
     da_reg: xr.DataArray,
     region_name: str,
@@ -364,28 +435,16 @@ def plot_map(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
 ) -> Path:
-    """
-    Salva una mappa per una regione/anno/inquinante.
-    - extent fisso (no bbox_inches="tight") -> dimensione coerente tra anni / GIF
-    - ticks lat/lon su tutti i bordi + minor ticks + griglia
-    - colorbar orizzontale sotto
-    - supporto vmin/vmax per scalare coerentemente (multi-anno)
-    """
     lat_name = da_reg.attrs["__lat_name__"]
     lon_name = da_reg.attrs["__lon_name__"]
 
     units = da_reg.attrs.get("units") or "µg/m3"
-    long_name = (
-        da_reg.attrs.get("long_name")
-        or da_reg.attrs.get("standard_name")
-        or pollutant
-    )
+    long_name = (da_reg.attrs.get("long_name") or da_reg.attrs.get("standard_name") or pollutant)
 
     out_dir = OUT_DIR / region_name / str(year)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_png = out_dir / f"{region_name}_{year}_{pollutant}_annual_mean.png"
 
-    # dati
     lats = np.asarray(da_reg[lat_name].values)
     lons = np.asarray(da_reg[lon_name].values)
     data = np.ma.masked_invalid(np.asarray(da_reg.values))
@@ -395,7 +454,6 @@ def plot_map(
     if np.ma.count(data) == 0:
         raise ValueError("Tutti i valori sono NaN dopo clip.")
 
-    # extent (con padding percentuale)
     minx, miny, maxx, maxy = geom.bounds
     pad_x = (maxx - minx) * 0.03
     pad_y = (maxy - miny) * 0.03
@@ -405,11 +463,10 @@ def plot_map(
     ax = plt.axes(projection=ccrs.PlateCarree())
     ax.set_extent(extent, crs=ccrs.PlateCarree())
 
-    # ===== ticks lat/lon "veri" (Cartopy) =====
-    xmaj = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 1e-6, 1.0)     # 1°
-    ymaj = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 1e-6, 0.5)     # 0.5°
-    xmin = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 1e-6, 0.5)     # 0.5°
-    ymin = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 1e-6, 0.25)    # 0.25°
+    xmaj = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 1e-6, 1.0)
+    ymaj = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 1e-6, 0.5)
+    xmin = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 1e-6, 0.5)
+    ymin = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 1e-6, 0.25)
 
     ax.set_xticks(xmaj, crs=ccrs.PlateCarree())
     ax.set_yticks(ymaj, crs=ccrs.PlateCarree())
@@ -419,25 +476,17 @@ def plot_map(
     ax.xaxis.set_major_formatter(LongitudeFormatter(number_format=".0f", degree_symbol="°"))
     ax.yaxis.set_major_formatter(LatitudeFormatter(number_format=".1f", degree_symbol="°"))
 
-    # tick su tutti i lati + verso interno
-    ax.tick_params(axis="both", which="major", direction="in", top=True, right=True,
-                   length=7, labelsize=10)
-    ax.tick_params(axis="both", which="minor", direction="in", top=True, right=True,
-                   length=4)
-
-    # label su tutti i lati
+    ax.tick_params(axis="both", which="major", direction="in", top=True, right=True, length=7, labelsize=10)
+    ax.tick_params(axis="both", which="minor", direction="in", top=True, right=True, length=4)
     ax.tick_params(axis="x", labeltop=True, labelbottom=True)
     ax.tick_params(axis="y", labelright=True, labelleft=True)
 
-    # griglia interna
     ax.grid(True, which="major", linewidth=0.4, linestyle="--", alpha=0.5)
     ax.grid(True, which="minor", linewidth=0.25, linestyle=":", alpha=0.35)
 
-    # features base
     ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.6, zorder=2)
     ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.4, zorder=2)
 
-    # raster
     mesh = ax.pcolormesh(
         lons, lats, data,
         transform=ccrs.PlateCarree(),
@@ -448,115 +497,38 @@ def plot_map(
         zorder=1,
     )
 
-    # confine regione sopra
-    ax.add_geometries(
-        [geom],
-        crs=ccrs.PlateCarree(),
-        facecolor="none",
-        edgecolor="black",
-        linewidth=1.8,
-        zorder=5,
-    )
-
+    ax.add_geometries([geom], crs=ccrs.PlateCarree(),
+                      facecolor="none", edgecolor="black", linewidth=1.8, zorder=5)
 
     plot_province_capitals(ax, region_name)
-
     ax.set_title(f"{region_name} – Media annua {year}\n{pollutant}", fontsize=13)
 
-    # colorbar orizzontale sotto
-    cb = plt.colorbar(
-        mesh,
-        ax=ax,
-        orientation="horizontal",
-        pad=0.08,
-        fraction=0.06,
-        aspect=35,
-    )
+    cb = plt.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.08, fraction=0.06, aspect=35)
     cb.set_label(f"{long_name} [{units}]" if units else f"{long_name}", fontsize=10)
     cb.ax.tick_params(labelsize=9, direction="in")
 
-    # footer
     fig.text(0.01, 0.01, FOOTER_LEFT, ha="left", va="bottom", fontsize=7)
     fig.text(0.99, 0.01, FOOTER_RIGHT, ha="right", va="bottom", fontsize=7)
 
-    # IMPORTANT: niente bbox_inches="tight" per non far "ballare" le mappe tra anni
     fig.savefig(out_png, dpi=DPI)
     plt.close(fig)
-
     return out_png
 
 
-
-
-
-
-
-def plot_province_capitals(ax, region_name: str):
-    """
-    Disegna i capoluoghi di provincia come punto + sigla.
-    """
-    if region_name not in PROVINCE_CAPITALS:
-        return
-
-    for cap in PROVINCE_CAPITALS[region_name]:
-        lon = cap["lon"]
-        lat = cap["lat"]
-        sigla = cap["sigla"]
-
-        # punto
-        ax.plot(
-            lon, lat,
-            marker="o",
-            markersize=4,
-            color="black",
-            transform=ccrs.PlateCarree(),
-            zorder=10,
-        )
-
-        # sigla (leggermente spostata)
-        ax.text(
-            lon + 0.03, lat + 0.03,
-            sigla,
-            fontsize=9,
-            fontweight="bold",
-            ha="left",
-            va="bottom",
-            transform=ccrs.PlateCarree(),
-            zorder=11,
-            bbox=dict(
-                facecolor="white",
-                edgecolor="none",
-                alpha=0.6,
-                pad=0.8
-            ),
-        )
-
-
-
-def sample_at_point(
-    da: xr.DataArray,
-    lat: float,
-    lon: float,
-    method: str = "nearest",  # "nearest" oppure "linear"
-) -> float:
-    """
-    Estrae il valore (float) da DataArray lat/lon in un punto.
-    method="nearest" robusto; "linear" fa interpolazione bilineare (più smooth).
-    """
+# =========================
+# TIME SERIES (capoluoghi)
+# =========================
+def sample_at_point(da: xr.DataArray, lat: float, lon: float, method: str = "nearest") -> float:
     lat_name = da.attrs["__lat_name__"]
     lon_name = da.attrs["__lon_name__"]
-
-    # lon coerente con dataarray già normalizzato in [-180, 180)
     lon_norm = ((lon + 180) % 360) - 180
 
     if method == "nearest":
         v = da.sel({lat_name: lat, lon_name: lon_norm}, method="nearest")
     else:
-        # interp richiede coordinate monotone -> di solito ok dopo sortby lon
         v = da.interp({lat_name: lat, lon_name: lon_norm}, method="linear")
 
-    val = float(v.values)
-    return val
+    return float(v.values)
 
 
 def build_capitals_timeseries_rows(
@@ -566,9 +538,6 @@ def build_capitals_timeseries_rows(
     region_name: str,
     method: str = "nearest",
 ):
-    """
-    Ritorna una lista di dict per tutti i capoluoghi della regione.
-    """
     units = da_year.attrs.get("units", "") or "µg/m3"
     long_name = da_year.attrs.get("long_name") or da_year.attrs.get("standard_name") or pollutant
 
@@ -593,9 +562,6 @@ def build_capitals_timeseries_rows(
 
 
 def plot_timeseries_by_pollutant(df_ts: pd.DataFrame, out_dir: Path):
-    """
-    Salva 1 PNG per ogni (regione, pollutant) con linee = capoluoghi.
-    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for (region, pollutant), g in df_ts.groupby(["region", "pollutant"]):
@@ -621,126 +587,9 @@ def plot_timeseries_by_pollutant(df_ts: pd.DataFrame, out_dir: Path):
         plt.close(fig)
 
 
-
-def plot_montage_years(
-    region_name: str,
-    pollutant: str,
-    year_to_da_reg: Dict[int, xr.DataArray],
-    geom,
-    out_path: Path,
-):
-    """
-    Griglia multi-anno per (regione, pollutant) con vmin/vmax comuni e colorbar unica.
-    """
-    if not year_to_da_reg:
-        raise RuntimeError("plot_montage_years: nessun anno disponibile.")
-
-    years = sorted(year_to_da_reg.keys())
-
-    # usa il primo DataArray come riferimento per attrs/ticks/extent
-    da0 = year_to_da_reg[years[0]]
-    lat_name = da0.attrs["__lat_name__"]
-    lon_name = da0.attrs["__lon_name__"]
-    units = da0.attrs.get("units", "") or "µg/m3"
-    long_name = da0.attrs.get("long_name", pollutant) or pollutant
-
-    # extent fisso (stessa regione)
-    minx, miny, maxx, maxy = geom.bounds
-    pad_x = (maxx - minx) * 0.03
-    pad_y = (maxy - miny) * 0.03
-    extent = [minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y]
-
-    # vmin/vmax globali su tutti gli anni (solo valori finiti)
-    all_vals = []
-    for y in years:
-        arr = np.asarray(year_to_da_reg[y].values)
-        arr = arr[np.isfinite(arr)]
-        if arr.size:
-            all_vals.append(arr)
-    if not all_vals:
-        raise RuntimeError("plot_montage_years: tutti gli anni sono NaN dopo clip.")
-    all_vals = np.concatenate(all_vals)
-    vmin = float(np.nanpercentile(all_vals, 2))
-    vmax = float(np.nanpercentile(all_vals, 98))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-        vmin = float(np.nanmin(all_vals))
-        vmax = float(np.nanmax(all_vals))
-
-    n = len(years)
-    ncols = 4  # 11 anni -> 3 righe (3x4)
-    nrows = int(np.ceil(n / ncols))
-
-    fig = plt.figure(figsize=(4.0 * ncols, 3.6 * nrows), dpi=DPI)
-    axes = []
-    mesh = None
-
-    for i, y in enumerate(years):
-        ax = fig.add_subplot(nrows, ncols, i + 1, projection=ccrs.PlateCarree())
-        axes.append(ax)
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
-
-        da = year_to_da_reg[y]
-        lats = da[lat_name].values
-        lons = da[lon_name].values
-        data = np.ma.masked_invalid(da.values)
-
-        # base map
-        ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.3)
-
-        # ticks “light” (per non affollare): solo major ogni 1°/0.5°
-        xmaj = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 0.001, 1.0)
-        ymaj = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 0.001, 0.5)
-        ax.set_xticks(xmaj, crs=ccrs.PlateCarree())
-        ax.set_yticks(ymaj, crs=ccrs.PlateCarree())
-        ax.xaxis.set_major_formatter(LongitudeFormatter(number_format=".0f", degree_symbol="°"))
-        ax.yaxis.set_major_formatter(LatitudeFormatter(number_format=".1f", degree_symbol="°"))
-        ax.tick_params(axis="both", which="major", direction="in", top=True, right=True, length=5, labelsize=8)
-
-        ax.grid(True, which="major", linewidth=0.3, linestyle="--", alpha=0.35)
-
-        # raster con scala comune
-        mesh = ax.pcolormesh(
-            lons, lats, data,
-            transform=ccrs.PlateCarree(),
-            shading="auto",
-            cmap=DEFAULT_CMAP,
-            vmin=vmin, vmax=vmax,
-            zorder=1,
-        )
-
-        # bordo regione
-        ax.add_geometries([geom], crs=ccrs.PlateCarree(),
-                          facecolor="none", edgecolor="black", linewidth=1.2, zorder=5)
-
-        # ===== capoluoghi di provincia (sigle) =====
-        plot_province_capitals(ax, region_name)                  
-
-        ax.set_title(str(y), fontsize=11)
-
-    # spegni eventuali subplot vuoti
-    for j in range(n, nrows * ncols):
-        ax = fig.add_subplot(nrows, ncols, j + 1)
-        ax.axis("off")
-
-    # titolo generale
-    fig.suptitle(f"{region_name} – {pollutant} – medie annue ({years[0]}–{years[-1]})", fontsize=16, y=0.98)
-
-    # colorbar unica sotto (riferita all’ultimo mesh creato)
-    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal", fraction=0.035, pad=0.06, aspect=50)
-    cb.set_label(f"{long_name} [{units}]", fontsize=11)
-    cb.ax.tick_params(labelsize=9, direction="in")
-
-    # footer
-    fig.text(0.01, 0.01, FOOTER_LEFT, ha="left", va="bottom", fontsize=9)
-    fig.text(0.99, 0.01, FOOTER_RIGHT, ha="right", va="bottom", fontsize=9)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-
-
+# =========================
+# MONTAGE
+# =========================
 def plot_montage_years_single_pollutant(
     region_name: str,
     pollutant: str,
@@ -760,13 +609,11 @@ def plot_montage_years_single_pollutant(
     units = da0.attrs.get("units", "") or "µg/m3"
     long_name = da0.attrs.get("long_name", da0.attrs.get("standard_name", pollutant)) or pollutant
 
-    # extent fisso (regione)
     minx, miny, maxx, maxy = geom.bounds
     pad_x = (maxx - minx) * 0.03
     pad_y = (maxy - miny) * 0.03
     extent = [minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y]
 
-    # vmin/vmax globali (percentili robusti)
     all_vals = []
     for y in years:
         arr = np.asarray(year_to_da_reg[y].values)
@@ -800,7 +647,6 @@ def plot_montage_years_single_pollutant(
         ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.5)
         ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.3)
 
-        # ticks “leggeri”
         xmaj = np.arange(np.floor(extent[0]), np.ceil(extent[1]) + 0.001, 1.0)
         ymaj = np.arange(np.floor(extent[2]), np.ceil(extent[3]) + 0.001, 0.5)
         ax.set_xticks(xmaj, crs=ccrs.PlateCarree())
@@ -827,37 +673,27 @@ def plot_montage_years_single_pollutant(
         ax.add_geometries([geom], crs=ccrs.PlateCarree(),
                           facecolor="none", edgecolor="black", linewidth=1.1, zorder=5)
 
-        # se vuoi anche qui i capoluoghi:
         plot_province_capitals(ax, region_name)
-
         ax.set_title(str(y), fontsize=11)
 
-    # subplot vuoti off
     for j in range(n, nrows * ncols):
         ax = fig.add_subplot(nrows, ncols, j + 1)
         ax.axis("off")
 
     fig.suptitle(f"{region_name} – {pollutant} – medie annue {years[0]}–{years[-1]}", fontsize=16, y=0.98)
 
-    # ---- spazio dedicato alla colorbar: CREA UN cax ----
-    # lascia spazio sotto ai subplot
     fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.12, wspace=0.15, hspace=0.22)
-
-    # asse dedicato alla colorbar in basso [left, bottom, width, height]
     cax = fig.add_axes([0.18, 0.07, 0.64, 0.03])
     cb = fig.colorbar(mesh, cax=cax, orientation="horizontal")
     cb.set_label(f"{long_name} [{units}]", fontsize=11)
     cb.ax.tick_params(labelsize=9, direction="in")
 
-    # footer (sotto la colorbar)
     fig.text(0.01, 0.02, FOOTER_LEFT, ha="left", va="bottom", fontsize=9)
     fig.text(0.99, 0.02, FOOTER_RIGHT, ha="right", va="bottom", fontsize=9)
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=DPI)  # <-- NO bbox_inches="tight"
+    fig.savefig(out_png, dpi=DPI)
     plt.close(fig)
-
-
 
 
 # =========================
@@ -881,6 +717,7 @@ def main():
     print(f"[INFO] DATA_DIR: {DATA_DIR}")
     print(f"[INFO] BOUNDARY_FILE: {BOUNDARY_FILE}")
     print(f"[INFO] OUT_DIR: {OUT_DIR}")
+    print(f"[INFO] REGRID_MODE={REGRID_MODE} | REGRID_METHOD={REGRID_METHOD}")
 
     df_annual, df_monthly = scan_cams_files(DATA_DIR)
     print(f"[INFO] Annual files: {len(df_annual)} | Monthly files: {len(df_monthly)}")
@@ -899,25 +736,27 @@ def main():
 
     region_geoms = load_region_geoms()
 
+    # griglia reference per pollutant
+    ref_grid_by_pollutant: Dict[str, Tuple[xr.DataArray, xr.DataArray]] = {}
+
     results = []
     frames_by_rp: Dict[Tuple[str, str], List[Tuple[int, Path]]] = {}
 
-    # tutti i (year, pollutant) possibili da annual o monthly
     combos = set()
     if not df_annual.empty:
         combos |= set(map(tuple, df_annual[["year", "pollutant"]].itertuples(index=False, name=None)))
     if not df_monthly.empty:
         combos |= set(map(tuple, df_monthly[["year", "pollutant"]].itertuples(index=False, name=None)))
 
-    # ==========================
-    # 1) MAPPE + CSV + FRAMES GIF
-    # ==========================
     ts_rows = []
 
+    # ==========================
+    # 1) MAPPE + CSV + FRAMES GIF + TIMESERIES
+    # ==========================
     for (year, pollutant) in sorted(combos):
         da_year = None
 
-        # 1) preferisci annual_mean se esiste
+        # 1) annual_mean se esiste
         if not df_annual.empty:
             hit = df_annual[(df_annual["year"] == year) & (df_annual["pollutant"] == pollutant)]
             if not hit.empty:
@@ -928,7 +767,7 @@ def main():
                     print(f"[WARN] Annual {year} {pollutant} fallito ({path}): {e}")
                     da_year = None
 
-        # 2) fallback: calcola dai mensili (validated > interim)
+        # 2) fallback mensili
         if da_year is None:
             if df_monthly.empty:
                 print(f"[SKIP] {year} {pollutant}: nessun mensile e nessun annual.")
@@ -950,11 +789,26 @@ def main():
         lon_name = da_year.attrs["__lon_name__"]
         da_year = normalize_longitudes(da_year, lon_name)
 
-        # --- TIME SERIES capoluoghi (valori su griglia intera, NON clip) ---
+        # (A) imposta (eventualmente aggiorna) la griglia reference per questo pollutant
+        maybe_set_reference_grid(pollutant, da_year, ref_grid_by_pollutant, mode=REGRID_MODE)
+
+        # (B) regrid sulla griglia reference (se non è già quella)
+        ref_lats, ref_lons = ref_grid_by_pollutant[pollutant]
+        da_year_rg = regrid_to_reference(da_year, ref_lats, ref_lons, method=REGRID_METHOD)
+
+        if DEBUG_GRID:
+            lat_name = da_year_rg.attrs["__lat_name__"]
+            lon_name = da_year_rg.attrs["__lon_name__"]
+            print("[GRID]", year, pollutant,
+                  "shape=", tuple(da_year_rg.shape),
+                  "dlat=", _grid_step_1d(da_year_rg[lat_name].values),
+                  "dlon=", _grid_step_1d(da_year_rg[lon_name].values))
+
+        # --- TIME SERIES capoluoghi: usa SEMPRE la griglia regridded (coerenza nel tempo) ---
         for region_name in REGIONS:
             ts_rows.extend(
                 build_capitals_timeseries_rows(
-                    da_year=da_year,
+                    da_year=da_year_rg,
                     year=year,
                     pollutant=pollutant,
                     region_name=region_name,
@@ -962,16 +816,15 @@ def main():
                 )
             )
 
-
-        lat_name = da_year.attrs["__lat_name__"]
-        lon_name = da_year.attrs["__lon_name__"]
-        units = da_year.attrs.get("units", "")
-        var_name = da_year.attrs.get("__var_name__", "")
-        n_months = da_year.attrs.get("__n_months__", "")
+        lat_name = da_year_rg.attrs["__lat_name__"]
+        lon_name = da_year_rg.attrs["__lon_name__"]
+        units = da_year_rg.attrs.get("units", "")
+        var_name = da_year_rg.attrs.get("__var_name__", "")
+        n_months = da_year_rg.attrs.get("__n_months__", "")
 
         for region_name, geom in region_geoms.items():
             try:
-                da_reg = clip_to_region(da_year, lat_name, lon_name, geom)
+                da_reg = clip_to_region(da_year_rg, lat_name, lon_name, geom)
 
                 out_png = plot_map(da_reg, region_name, year, pollutant, geom)
 
@@ -998,7 +851,7 @@ def main():
     pd.DataFrame(results).sort_values(["region", "year", "pollutant"]).to_csv(csv_path, index=False)
     print(f"[DONE] CSV salvato: {csv_path}")
 
-    # GIF per ogni (regione, pollutant)
+    # GIF
     GIF_DIR.mkdir(parents=True, exist_ok=True)
     for (region_name, pollutant), frames in frames_by_rp.items():
         frames_sorted = [p for (y, p) in sorted(frames, key=lambda t: t[0])]
@@ -1009,8 +862,15 @@ def main():
         except Exception as e:
             print(f"[SKIP] GIF {region_name} {pollutant}: {e}")
 
+    # TIME SERIES output
+    df_ts = pd.DataFrame(ts_rows)
+    ts_dir = OUT_DIR / "timeseries_capoluoghi"
+    plot_timeseries_by_pollutant(df_ts, ts_dir)
+    df_ts.to_csv(ts_dir / "capitals_timeseries_values.csv", index=False)
+    print(f"[DONE] Timeseries salvate in: {ts_dir}")
+
     # ==========================
-    # 2) MONTAGE multi-anno (anni affiancati + colorbar unica)
+    # 2) MONTAGE multi-anno
     # ==========================
     montage_root = OUT_DIR / "montages"
     montage_root.mkdir(parents=True, exist_ok=True)
@@ -1022,10 +882,14 @@ def main():
         for pollutant in all_pollutants:
             year_to_da: Dict[int, xr.DataArray] = {}
 
+            # se non ho reference grid per quel pollutant (mai processato sopra), salto
+            if pollutant not in ref_grid_by_pollutant:
+                continue
+            ref_lats, ref_lons = ref_grid_by_pollutant[pollutant]
+
             for y in all_years:
                 da_y = None
 
-                # 1) annual_mean se c'è
                 if not df_annual.empty:
                     hit = df_annual[(df_annual["year"] == y) & (df_annual["pollutant"] == pollutant)]
                     if not hit.empty:
@@ -1035,7 +899,6 @@ def main():
                             print(f"[SKIP] montage annual {region_name} {pollutant} {y}: {e}")
                             da_y = None
 
-                # 2) fallback mensili (validated > interim)
                 if da_y is None and not df_monthly.empty:
                     grp = df_monthly[(df_monthly["year"] == y) & (df_monthly["pollutant"] == pollutant)]
                     if not grp.empty:
@@ -1049,14 +912,15 @@ def main():
                 if da_y is None:
                     continue
 
-                # normalize lon
                 lon_name = da_y.attrs["__lon_name__"]
                 da_y = normalize_longitudes(da_y, lon_name)
+
+                # regrid su reference grid
+                da_y = regrid_to_reference(da_y, ref_lats, ref_lons, method=REGRID_METHOD)
 
                 lat_name = da_y.attrs["__lat_name__"]
                 lon_name = da_y.attrs["__lon_name__"]
 
-                # clip regione
                 try:
                     da_reg = clip_to_region(da_y, lat_name, lon_name, geom)
                     arr = np.asarray(da_reg.values)
@@ -1085,21 +949,6 @@ def main():
                 print(f"[DONE] MONTAGE: {out_png}")
             except Exception as e:
                 print(f"[SKIP] MONTAGE {region_name} {pollutant}: {e}")
-
-            # ==========================
-            # 3) TIME SERIES capoluoghi
-            # ==========================
-            df_ts = pd.DataFrame(ts_rows)
-
-            ts_dir = OUT_DIR / "timeseries_capoluoghi"
-            plot_timeseries_by_pollutant(df_ts, ts_dir)
-
-            # opzionale: salva anche i valori in CSV
-            df_ts.to_csv(ts_dir / "capitals_timeseries_values.csv", index=False)
-
-            print(f"[DONE] Timeseries salvate in: {ts_dir}")
-
-
 
 
 if __name__ == "__main__":
