@@ -1,0 +1,15 @@
+services:
+  era5-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: era5-downloader
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      # Percorso interno al container; mappato sul percorso host reale sotto.
+      ERA5_OUTPUT_DIR: /data/era5
+    volumes:
+      - /home/manager/storage/atmo/sftpgo/inbound/raw_data/satellites/copernicus/era5:/data/era5
+    command: ["--env", ".env"]

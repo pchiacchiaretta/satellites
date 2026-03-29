@@ -52,4 +52,5 @@ urllib3==2.6.3
 xarray==2025.6.1
 xyzservices==2025.11.0
 zict==3.0.0
+cdsapi==0.7.7
 zipp==3.23.0

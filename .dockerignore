@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+camsenv
+.ipynb_checkpoints
+outputs
+outputs_cams_annual
+data
+*.nc
+*.nc4
+*.grib
+*.grib2

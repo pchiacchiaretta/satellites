@@ -248,6 +248,66 @@ Importante:
 
 ### PM10
 
+---
+
+## 9) Esecuzione con Docker (consigliato)
+
+Per evitare dipendenze sul sistema host, puoi usare direttamente Docker.
+
+### Opzione A: Docker Compose (consigliata)
+
+1. Posizionati nella cartella `satellites`.
+2. Verifica i parametri nel file `.env` (periodo, area, variabili).
+3. Esegui:
+
+```bash
+docker compose build
+docker compose up
+```
+
+I file scaricati vengono salvati subito in `./data/era5_europe_hourly` (montata dal container).
+
+### Opzione B: Docker run
+
+```bash
+docker build -t era5-downloader .
+docker run --rm \
+  --env-file .env \
+  -e ERA5_OUTPUT_DIR=/data/era5_europe_hourly \
+  -v "$(pwd)/data:/data" \
+  era5-downloader --env .env
+```
+
+### Note utili
+
+- Lo script salva un file per ogni `variabile + mese`, quindi non aspetta il completamento di tutto il periodo.
+- Se un file esiste gia', viene saltato (`ERA5_SKIP_EXISTING=true`).
+- Per autenticazione CDS puoi usare `~/.cdsapirc` oppure valorizzare `CDSAPI_KEY` nel `.env`.
+- `CDSAPI_KEY` puo' essere solo token/API key (senza UID); se necessario e' accettato anche `UID:KEY`.
+- Logging su console e file (`ERA5_LOG_FILE`, default in output).
+- Controlli automatici su ogni job: parametri request, path target, estensione file, integrita' file scaricato.
+
+### Monitoraggio stato download
+
+Nel log troverai eventi espliciti:
+
+- `[REQUEST_READY]` richiesta trovata e validata
+- `[DOWNLOAD_START]` download in corso
+- `[DOWNLOAD_DONE]` download completato e verificato
+- `[SKIP_EXISTING_OK]` file gia' presente e valido
+- `[DOWNLOAD_ERROR]` errore durante il download
+- `[VERIFY_FAILED]` file scaricato ma non valido
+
+Comandi utili:
+
+```bash
+# stream live dei log
+tail -f /percorso/del/log/era5_downloader.log
+
+# ultimi eventi
+tail -n 50 /percorso/del/log/era5_downloader.log
+```
+
 * OMS 2021: annua **15 µg/m³**, 24h **45 µg/m³**
 * UE: annua **40 µg/m³**, 24h **50 µg/m³** (≤ 35 superamenti/anno)
 

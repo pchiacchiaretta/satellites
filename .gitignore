@@ -89,5 +89,9 @@ dask-worker-space/
 # =========================
 .env
 .env.*
+!.env.example
 
 outputs_cams_annual
+
+# ERA5 runtime data
+data/
