@@ -278,6 +278,36 @@ docker run --rm \
   era5-downloader --env .env
 ```
 
+---
+
+## 10) Downloader CAMS global reanalysis (EAC4)
+
+E' disponibile anche uno script dedicato per CAMS EAC4:
+
+```text
+cams_eac4_download_europe.py
+```
+
+Caratteristiche principali:
+
+* periodo predefinito 2003-2025
+* area Europa configurabile via `CAMS_AREA`
+* risoluzione temporale EAC4 a 3 ore (`00,03,...,21`)
+* supporto `CAMS_VARIABLES=all` con autodiscovery dal catalogo ADS
+* supporto profili `single`, `model`, `pressure`, `all`
+
+Per dettagli operativi vedi:
+
+```text
+CAMS_EAC4_DOWNLOADER.md
+```
+
+Lancio Docker Compose (solo servizio CAMS EAC4):
+
+```bash
+docker compose up cams-eac4-downloader
+```
+
 ### Note utili
 
 - Lo script salva un file per ogni `variabile + mese`, quindi non aspetta il completamento di tutto il periodo.

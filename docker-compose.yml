@@ -13,3 +13,18 @@ services:
     volumes:
       - /home/manager/storage/atmo/sftpgo/inbound/raw_data/satellites/copernicus/era5:/data/era5
     command: ["--env", ".env"]
+
+  cams-eac4-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cams-eac4-downloader
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      CAMS_OUTPUT_DIR: /data/cams_eac4
+    volumes:
+      - /home/manager/storage/atmo/sftpgo/inbound/raw_data/satellites/copernicus/cams_eac4:/data/cams_eac4
+    entrypoint: ["python", "cams_eac4_download_europe.py"]
+    command: ["--env", ".env"]
