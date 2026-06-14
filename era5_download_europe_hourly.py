@@ -186,6 +186,12 @@ def parse_config(env_values: Dict[str, str]) -> Config:
     end_year = int(get_env(env_values, "ERA5_END_YEAR", "2026"))
     end_month = int(get_env(env_values, "ERA5_END_MONTH", "12"))
 
+    # Cap automatico: ERA5 non ha dati futuri, ci si ferma al mese precedente a oggi.
+    today = date.today()
+    cap_year, cap_month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    if (end_year, end_month) > (cap_year, cap_month):
+        end_year, end_month = cap_year, cap_month
+
     if not (1 <= start_month <= 12 and 1 <= end_month <= 12):
         raise ValueError("I mesi devono essere compresi tra 1 e 12")
 
